@@ -23,8 +23,7 @@ jobs:
         run: git remote add upstream https://github.com/astral-sh/setup-uv.git
 
       - name: Fetch Upstream Changes
-        run: git fetch --prune --all --verbose
+        run: git fetch upstream --prune --tags --verbose
 
       - name: Push changes to origin
-        run: |
-          git push origin refs/heads/main --tags --verbose
+        run: git push origin --tags --verbose
