@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Forked Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
             fetch-tags: true
             token: ${{ secrets.SYNC_FORK_TOKEN }}
@@ -26,4 +26,4 @@ jobs:
         run: git fetch upstream --prune --tags --verbose
 
       - name: Push changes to origin
-        run: git push origin --tags --verbose
+        run: git push origin --force --tags --verbose
