@@ -1,109 +1,123 @@
 import * as cache from "@actions/cache";
 import * as core from "@actions/core";
-import {
-  cacheDependencyGlob,
-  cacheLocalPath,
-  cacheSuffix,
-  pruneCache,
-  pythonVersion as pythonVersionInput,
-  workingDirectory,
-} from "../utils/inputs";
-import { getArch, getPlatform } from "../utils/platforms";
 import { hashFiles } from "../hash/hash-files";
-import * as exec from "@actions/exec";
+import type { SetupInputs } from "../utils/inputs";
+import * as log from "../utils/logging";
+import { getArch, getOSNameVersion, getPlatform } from "../utils/platforms";
 
 export const STATE_CACHE_KEY = "cache-key";
 export const STATE_CACHE_MATCHED_KEY = "cache-matched-key";
-const CACHE_VERSION = "1";
+export const STATE_PYTHON_CACHE_MATCHED_KEY = "python-cache-matched-key";
 
-export async function restoreCache(): Promise<void> {
-  const cacheKey = await computeKeys();
+const CACHE_VERSION = "2";
 
-  let matchedKey: string | undefined;
-  core.info(
-    `Trying to restore uv cache from GitHub Actions cache with key: ${cacheKey}`,
-  );
-  try {
-    matchedKey = await cache.restoreCache([cacheLocalPath], cacheKey);
-  } catch (err) {
-    const message = (err as Error).message;
-    core.warning(message);
-    core.setOutput("cache-hit", false);
+export async function restoreCache(
+  inputs: SetupInputs,
+  pythonVersion?: string,
+): Promise<void> {
+  const cacheKey = await computeKeys(inputs, pythonVersion);
+  core.saveState(STATE_CACHE_KEY, cacheKey);
+  core.setOutput("cache-key", cacheKey);
+
+  if (!inputs.restoreCache) {
+    log.info("restore-cache is false. Skipping restore cache step.");
+    core.setOutput("python-cache-hit", false);
     return;
   }
 
-  core.saveState(STATE_CACHE_KEY, cacheKey);
+  if (inputs.cacheLocalPath === undefined) {
+    throw new Error(
+      "cache-local-path is not set. Cannot restore cache without a valid cache path.",
+    );
+  }
 
-  handleMatchResult(matchedKey, cacheKey);
+  await restoreCacheFromKey(
+    cacheKey,
+    inputs.cacheLocalPath.path,
+    STATE_CACHE_MATCHED_KEY,
+    "cache-hit",
+  );
+
+  if (inputs.cachePython) {
+    await restoreCacheFromKey(
+      `${cacheKey}-python`,
+      inputs.pythonDir,
+      STATE_PYTHON_CACHE_MATCHED_KEY,
+      "python-cache-hit",
+    );
+  } else {
+    core.setOutput("python-cache-hit", false);
+  }
 }
 
-async function computeKeys(): Promise<string> {
+async function restoreCacheFromKey(
+  cacheKey: string,
+  cachePath: string,
+  stateKey: string,
+  outputKey: string,
+): Promise<void> {
+  log.info(
+    `Trying to restore cache from GitHub Actions cache with key: ${cacheKey}`,
+  );
+  let matchedKey: string | undefined;
+  try {
+    matchedKey = await cache.restoreCache([cachePath], cacheKey);
+  } catch (err) {
+    const message = (err as Error).message;
+    log.warning(message);
+    core.setOutput(outputKey, false);
+    return;
+  }
+
+  handleMatchResult(matchedKey, cacheKey, stateKey, outputKey);
+}
+
+async function computeKeys(
+  inputs: SetupInputs,
+  pythonVersion?: string,
+): Promise<string> {
   let cacheDependencyPathHash = "-";
-  if (cacheDependencyGlob !== "") {
-    core.info(
-      `Searching files using cache dependency glob: ${cacheDependencyGlob.split("\n").join(",")}`,
+  if (inputs.cacheDependencyGlob !== "") {
+    log.info(
+      `Searching files using cache dependency glob: ${inputs.cacheDependencyGlob.split("\n").join(",")}`,
     );
-    cacheDependencyPathHash += await hashFiles(cacheDependencyGlob, true);
+    cacheDependencyPathHash += await hashFiles(
+      inputs.cacheDependencyGlob,
+      true,
+    );
     if (cacheDependencyPathHash === "-") {
-      core.warning(
-        `No file matched to [${cacheDependencyGlob.split("\n").join(",")}]. The cache will never get invalidated. Make sure you have checked out the target repository and configured the cache-dependency-glob input correctly.`,
+      log.warning(
+        `No file matched to [${inputs.cacheDependencyGlob.split("\n").join(",")}]. The cache will never get invalidated. Make sure you have checked out the target repository and configured the cache-dependency-glob input correctly.`,
       );
     }
   }
   if (cacheDependencyPathHash === "-") {
     cacheDependencyPathHash = "-no-dependency-glob";
   }
-  const suffix = cacheSuffix ? `-${cacheSuffix}` : "";
-  const pythonVersion = await getPythonVersion();
+  const suffix = inputs.cacheSuffix
+    ? `-${encodeURIComponent(inputs.cacheSuffix)}`
+    : "";
+  const version = encodeURIComponent(pythonVersion ?? "unknown");
   const platform = await getPlatform();
-  const pruned = pruneCache ? "-pruned" : "";
-  return `setup-uv-${CACHE_VERSION}-${getArch()}-${platform}-${pythonVersion}${pruned}${cacheDependencyPathHash}${suffix}`;
-}
-
-async function getPythonVersion(): Promise<string> {
-  if (pythonVersionInput !== "") {
-    return pythonVersionInput;
-  }
-
-  let output = "";
-  const options: exec.ExecOptions = {
-    silent: !core.isDebug(),
-    listeners: {
-      stdout: (data: Buffer) => {
-        output += data.toString();
-      },
-    },
-  };
-
-  try {
-    const execArgs = ["python", "find", "--directory", workingDirectory];
-    await exec.exec("uv", execArgs, options);
-    const pythonPath = output.trim();
-
-    output = "";
-    await exec.exec(pythonPath, ["--version"], options);
-    // output is like "Python 3.8.10"
-    return output.split(" ")[1].trim();
-  } catch (error) {
-    const err = error as Error;
-    core.debug(`Failed to get python version from uv. Error: ${err.message}`);
-    return "unknown";
-  }
+  const osNameVersion = getOSNameVersion();
+  const pruned = inputs.pruneCache ? "-pruned" : "";
+  const python = inputs.cachePython ? "-py" : "";
+  return `setup-uv-${CACHE_VERSION}-${getArch()}-${platform}-${osNameVersion}-${version}${pruned}${python}${cacheDependencyPathHash}${suffix}`;
 }
 
 function handleMatchResult(
   matchedKey: string | undefined,
   primaryKey: string,
+  stateKey: string,
+  outputKey: string,
 ): void {
   if (!matchedKey) {
-    core.info(`No GitHub Actions cache found for key: ${primaryKey}`);
-    core.setOutput("cache-hit", false);
+    log.info(`No GitHub Actions cache found for key: ${primaryKey}`);
+    core.setOutput(outputKey, false);
     return;
   }
 
-  core.saveState(STATE_CACHE_MATCHED_KEY, matchedKey);
-  core.info(
-    `uv cache restored from GitHub Actions cache with key: ${matchedKey}`,
-  );
-  core.setOutput("cache-hit", true);
+  core.saveState(stateKey, matchedKey);
+  log.info(`cache restored from GitHub Actions cache with key: ${matchedKey}`);
+  core.setOutput(outputKey, true);
 }

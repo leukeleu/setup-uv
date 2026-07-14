@@ -1,46 +1,37 @@
 import fs from "node:fs";
-import * as core from "@actions/core";
 import * as toml from "smol-toml";
 
-export function getUvVersionFromConfigFile(
+export function getConfigValueFromTomlFile(
   filePath: string,
+  key: string,
 ): string | undefined {
-  core.info(`Trying to find required-version for uv in: ${filePath}`);
-  if (!fs.existsSync(filePath)) {
-    core.info(`Could not find file: ${filePath}`);
-    return undefined;
-  }
-  let requiredVersion: string | undefined;
-  try {
-    requiredVersion = getRequiredVersion(filePath);
-  } catch (err) {
-    const message = (err as Error).message;
-    core.warning(`Error while parsing ${filePath}: ${message}`);
+  if (!fs.existsSync(filePath) || !filePath.endsWith(".toml")) {
     return undefined;
   }
 
-  if (requiredVersion?.startsWith("==")) {
-    requiredVersion = requiredVersion.slice(2);
-  }
-  if (requiredVersion !== undefined) {
-    core.info(
-      `Found required-version for uv in ${filePath}: ${requiredVersion}`,
-    );
-  }
-  return requiredVersion;
+  const fileContent = fs.readFileSync(filePath, "utf-8");
+  return getConfigValueFromTomlContent(filePath, fileContent, key);
 }
 
-function getRequiredVersion(filePath: string): string | undefined {
-  const fileContent = fs.readFileSync(filePath, "utf-8");
+export function getConfigValueFromTomlContent(
+  filePath: string,
+  fileContent: string,
+  key: string,
+): string | undefined {
+  if (!filePath.endsWith(".toml")) {
+    return undefined;
+  }
 
   if (filePath.endsWith("pyproject.toml")) {
     const tomlContent = toml.parse(fileContent) as {
-      tool?: { uv?: { "required-version"?: string } };
+      tool?: { uv?: Record<string, string | undefined> };
     };
-    return tomlContent?.tool?.uv?.["required-version"];
+    return tomlContent?.tool?.uv?.[key];
   }
-  const tomlContent = toml.parse(fileContent) as {
-    "required-version"?: string;
-  };
-  return tomlContent["required-version"];
+
+  const tomlContent = toml.parse(fileContent) as Record<
+    string,
+    string | undefined
+  >;
+  return tomlContent[key];
 }
